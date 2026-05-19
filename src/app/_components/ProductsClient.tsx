@@ -1,9 +1,24 @@
 'use client'
 import { useState } from 'react'
 import Link from 'next/link'
-import { trpc } from '@/trpc/react'
+import { trpc } from '@/trpc/client'
+type Product = {
+  id: number
+  name: string
+  price: number
+  category: string
+  description: string | null
+  createdAt: Date | string
+}
 
-export default function ProductsClient() {
+interface Props {
+  initialProducts: Product[]
+  initialCategories: string[]
+}
+
+export default function ProductsClient({ initialProducts, initialCategories }: Props) {
+  const [products, setProducts] = useState<Product[]>(initialProducts)
+  const [categories, setCategories] = useState<string[]>(initialCategories)
   const [category, setCategory] = useState<string | undefined>()
   const [form, setForm] = useState({
     name: '',
@@ -17,27 +32,24 @@ export default function ProductsClient() {
     category: '',
     description: '',
   })
+  const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [deletingId, setDeletingId] = useState<number | null>(null)
 
-  const utils = trpc.useUtils()
+  async function refreshData(cat?: string) {
+    const [newProducts, newCategories] = await Promise.all([
+      trpc.product.list.query({ category: cat }),
+      trpc.product.categories.query(),
+    ])
+    setProducts(newProducts)
+    setCategories(newCategories)
+  }
 
-  const products = trpc.product.list.useQuery({ category })
-  const categories = trpc.product.categories.useQuery()
-
-  const create = trpc.product.create.useMutation({
-    onSuccess: () => {
-      utils.product.list.invalidate()
-      utils.product.categories.invalidate()
-      setForm({ name: '', price: '', category: '', description: '' })
-      setErrors({ name: '', price: '', category: '', description: '' })
-    },
-  })
-
-  const remove = trpc.product.delete.useMutation({
-    onSuccess: () => {
-      utils.product.list.invalidate()
-      utils.product.categories.invalidate()
-    },
-  })
+  async function filterByCategory(cat: string | undefined) {
+    setCategory(cat)
+    const filtered = await trpc.product.list.query({ category: cat })
+    setProducts(filtered)
+  }
 
   function validate() {
     const newErrors = { name: '', price: '', category: '', description: '' }
@@ -54,15 +66,36 @@ export default function ProductsClient() {
     return Object.values(newErrors).every((e) => e === '')
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!validate()) return
-    create.mutate({
-      name: form.name,
-      price: parseFloat(form.price),
-      category: form.category,
-      description: form.description || undefined,
-    })
+    setIsCreating(true)
+    setCreateError('')
+    try {
+      await trpc.product.create.mutate({
+        name: form.name,
+        price: parseFloat(form.price),
+        category: form.category,
+        description: form.description || undefined,
+      })
+      await refreshData(category)
+      setForm({ name: '', price: '', category: '', description: '' })
+      setErrors({ name: '', price: '', category: '', description: '' })
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to add product.')
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  async function handleDelete(id: number) {
+    setDeletingId(id)
+    try {
+      await trpc.product.delete.mutate({ id })
+      await refreshData(category)
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   return (
@@ -139,22 +172,22 @@ export default function ProductsClient() {
           </div>
           <button
             type="submit"
-            disabled={create.isPending}
+            disabled={isCreating}
             className="col-span-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-lg py-2 text-sm transition-colors"
           >
-            {create.isPending ? 'Adding…' : 'Add Product'}
+            {isCreating ? 'Adding…' : 'Add Product'}
           </button>
-          {create.error && (
-            <p className="col-span-2 text-red-600 text-xs">{create.error.message}</p>
+          {createError && (
+            <p className="col-span-2 text-red-600 text-xs">{createError}</p>
           )}
         </form>
       </section>
 
       {/* Category filter */}
-      {(categories.data?.length ?? 0) > 0 && (
+      {categories.length > 0 && (
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setCategory(undefined)}
+            onClick={() => filterByCategory(undefined)}
             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
               !category
                 ? 'bg-gray-900 text-white'
@@ -163,10 +196,10 @@ export default function ProductsClient() {
           >
             All
           </button>
-          {categories.data?.map((cat) => (
+          {categories.map((cat) => (
             <button
               key={cat}
-              onClick={() => setCategory(cat === category ? undefined : cat)}
+              onClick={() => filterByCategory(cat === category ? undefined : cat)}
               className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
                 category === cat
                   ? 'bg-gray-900 text-white'
@@ -180,13 +213,11 @@ export default function ProductsClient() {
       )}
 
       {/* Product grid */}
-      {products.isLoading ? (
-        <p className="text-gray-400 text-sm">Loading…</p>
-      ) : products.data?.length === 0 ? (
+      {products.length === 0 ? (
         <p className="text-gray-400 text-sm">No products yet. Add one above.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {products.data?.map((p) => (
+          {products.map((p) => (
             <Link
               key={p.id}
               href={`/products/${p.id}`}
@@ -209,11 +240,11 @@ export default function ProductsClient() {
                   {new Date(p.createdAt).toLocaleDateString()}
                 </span>
                 <button
-                  onClick={(e) => { e.preventDefault(); remove.mutate({ id: p.id }) }}
-                  disabled={remove.isPending}
+                  onClick={(e) => { e.preventDefault(); handleDelete(p.id) }}
+                  disabled={deletingId !== null}
                   className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 transition-colors"
                 >
-                  Delete
+                  {deletingId === p.id ? 'Deleting…' : 'Delete'}
                 </button>
               </div>
             </Link>

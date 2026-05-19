@@ -1,4 +1,5 @@
-import { trpc, HydrateClient } from '@/trpc/server'
+import { getCaller } from '@/trpc/server'
+import { notFound } from 'next/navigation'
 import ProductClient from './_components/ProductClient'
 
 export default async function ProductPage({
@@ -9,11 +10,10 @@ export default async function ProductPage({
   const { id } = await params
   const productId = parseInt(id, 10)
 
-  await trpc.product.getById.prefetch({ id: productId })
+  const caller = getCaller()
+  const product = await caller.product.getById({ id: productId })
 
-  return (
-    <HydrateClient>
-      <ProductClient id={productId} />
-    </HydrateClient>
-  )
+  if (!product) notFound()
+
+  return <ProductClient product={product} />
 }

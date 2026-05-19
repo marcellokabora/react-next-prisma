@@ -1,39 +1,29 @@
 'use client'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { trpc } from '@/trpc/react'
+import { useState } from 'react'
+import { trpc } from '@/trpc/client'
+type Product = {
+  id: number
+  name: string
+  price: number
+  category: string
+  description: string | null
+  createdAt: Date
+}
 
-export default function ProductClient({ id }: { id: number }) {
+export default function ProductClient({ product }: { product: Product }) {
   const router = useRouter()
+  const [isDeleting, setIsDeleting] = useState(false)
 
-  const { data: product, isLoading, error } = trpc.product.getById.useQuery({ id })
-
-  const utils = trpc.useUtils()
-  const remove = trpc.product.delete.useMutation({
-    onSuccess: () => {
-      utils.product.list.invalidate()
-      utils.product.categories.invalidate()
+  async function handleDelete() {
+    setIsDeleting(true)
+    try {
+      await trpc.product.delete.mutate({ id: product.id })
       router.push('/')
-    },
-  })
-
-  if (isLoading) {
-    return (
-      <main className="max-w-2xl mx-auto p-6">
-        <p className="text-gray-400 text-sm">Loading…</p>
-      </main>
-    )
-  }
-
-  if (error || !product) {
-    return (
-      <main className="max-w-2xl mx-auto p-6 space-y-4">
-        <Link href="/" className="text-sm text-blue-600 hover:underline">
-          ← Back to catalog
-        </Link>
-        <p className="text-red-500 text-sm">Product not found.</p>
-      </main>
-    )
+    } catch {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -76,11 +66,11 @@ export default function ProductClient({ id }: { id: number }) {
       <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
         <h2 className="text-sm font-semibold text-red-700">Danger zone</h2>
         <button
-          onClick={() => remove.mutate({ id: product.id })}
-          disabled={remove.isPending}
+          onClick={handleDelete}
+          disabled={isDeleting}
           className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
         >
-          {remove.isPending ? 'Deleting…' : 'Delete product'}
+          {isDeleting ? 'Deleting…' : 'Delete product'}
         </button>
       </div>
     </main>

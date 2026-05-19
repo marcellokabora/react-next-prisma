@@ -57,13 +57,13 @@ In this app the boundary is enforced by:
 ### Q: How does a request travel from the browser to the database?
 
 **Short answer:**
-Browser → tRPC React client → HTTP POST to `/api/trpc/product.X` → Next.js route handler → tRPC router → Prisma → SQLite.
+Browser → vanilla tRPC client → HTTP POST to `/api/trpc/product.X` → Next.js route handler → tRPC router → Prisma → SQLite.
 
 **Step by step:**
 
 ```
 1. User clicks "Add Product"
-2. trpc.product.create.mutate({ name, price, ... })   [src/app/page.tsx]
+2. await trpc.product.create.mutate({ name, price, ... })   [ProductsClient.tsx]
 3. httpBatchLink serialises it to:
    POST /api/trpc/product.create
    Body: { "0": { name, price, ... } }
@@ -74,7 +74,8 @@ Browser → tRPC React client → HTTP POST to `/api/trpc/product.X` → Next.js
 8. Prisma WASM compiler generates SQL: INSERT INTO "Product" ...
 9. libSQL driver sends SQL to SQLite
 10. Row is inserted, response travels back
-11. onSuccess → cache invalidated → UI refetches automatically
+11. Component awaits the result, then re-fetches list and categories
+12. setProducts() / setCategories() update local React state — UI updates
 ```
 
 ---
@@ -335,9 +336,11 @@ Folders with `[brackets]` are dynamic segments — the value is passed as a para
 Server Components render on the server and have no JavaScript in the browser. Client Components run in the browser and can use React state and hooks. You mark a file as a Client Component with `'use client'` at the top.
 
 **Deep dive:**
-In this app, `page.tsx` and `products/[id]/page.tsx` are Client Components because they use `useState`, `useMutation`, and `useQuery`. `layout.tsx` is a Server Component that wraps everything.
+In this app, `page.tsx` and `products/[id]/page.tsx` are **Server Components** — they have no `'use client'` directive, run only on the server, and can be `async` functions that `await` database calls directly. They fetch data via the tRPC server caller and pass results as props to client components.
 
-The `src/server/` folder is **server-only** — if a Client Component tried to import from it, Next.js would throw an error or accidentally expose server code.
+`ProductsClient.tsx` and `ProductClient.tsx` are **Client Components** — they use `useState` and handle user interactions. They receive initial data as props (so first render has no loading state) and call the vanilla tRPC HTTP client for mutations.
+
+The `src/server/` folder is **server-only** — if a Client Component tried to import from it, Next.js would throw a build error.
 
 ---
 
@@ -359,40 +362,66 @@ In this app the protection is architectural:
 
 ---
 
-### Q: What is TanStack Query (React Query) and why is it used?
+### Q: How do client components get their initial data without a loading state?
 
 **Short answer:**
-It is a data-fetching and caching library. It handles loading states, background refetching, cache invalidation, and deduplication of requests automatically.
+The server page fetches data in-process via the tRPC caller and passes it as props. The client component starts with data already in local state — no `useEffect`, no loading spinner.
 
 **Deep dive:**
-Without React Query you would manage `loading`, `error`, and `data` state manually with `useEffect` and `fetch`. React Query replaces all of that and adds:
 
-- Automatic background refetching when the window regains focus
-- Request deduplication (multiple components using the same query share one request)
-- `staleTime` / `cacheTime` configuration
-- `invalidate` to mark data stale after a mutation
+```tsx
+// Server component — runs on the server, no JS in the browser
+export default async function Page() {
+  const caller = getCaller();
+  const [initialProducts, initialCategories] = await Promise.all([
+    caller.product.list({}),
+    caller.product.categories(),
+  ]);
+  return (
+    <ProductsClient
+      initialProducts={initialProducts}
+      initialCategories={initialCategories}
+    />
+  );
+}
 
-tRPC's `@trpc/react-query` package wraps React Query so every tRPC procedure automatically gets a `useQuery` or `useMutation` hook with the correct types.
+// Client component — starts with data already available
+export default function ProductsClient({
+  initialProducts,
+  initialCategories,
+}: Props) {
+  const [products, setProducts] = useState(initialProducts);
+  const [categories, setCategories] = useState(initialCategories);
+  // ...
+}
+```
+
+The caller invokes tRPC procedures **in-process** (no HTTP round-trip), so the data is ready before the page HTML is sent to the browser.
 
 ---
 
-### Q: How does cache invalidation work after a mutation?
+### Q: How does the UI stay in sync after a mutation?
 
 **Short answer:**
-After a mutation succeeds, `utils.product.list.invalidate()` marks the cached query as stale. React Query then automatically refetches it in the background and updates the UI.
+After a mutation resolves, the component explicitly re-fetches the affected data via the vanilla tRPC client and updates local state with `setProducts` / `setCategories`.
 
 **Deep dive:**
 
 ```ts
-const create = trpc.product.create.useMutation({
-  onSuccess: () => {
-    utils.product.list.invalidate(); // triggers refetch of the list
-    utils.product.categories.invalidate(); // triggers refetch of categories
-  },
-});
+async function handleSubmit(e: React.FormEvent) {
+  e.preventDefault();
+  await trpc.product.create.mutate({ name, price, category, description });
+  // Explicit re-fetch after the mutation
+  const [newProducts, newCategories] = await Promise.all([
+    trpc.product.list.query({ category }),
+    trpc.product.categories.query(),
+  ]);
+  setProducts(newProducts);
+  setCategories(newCategories);
+}
 ```
 
-Without invalidation the UI would show stale data until the page is refreshed. Invalidation keeps the client in sync with the server without a full page reload or manual state management.
+This is intentionally explicit: there is no background cache layer. The trade-off vs React Query is slightly more code per mutation, but the mental model is simpler — state changes are visible in the component, not hidden in a cache.
 
 ---
 
@@ -419,7 +448,7 @@ This is a Next.js App Router breaking change from earlier versions where `params
 ### Q: How do types flow from the server to the client without sharing runtime code?
 
 **Short answer:**
-`AppRouter` is exported as a TypeScript type from the server. The client imports it as a type only — TypeScript uses it to generate typed hooks, then erases it at compile time. No server code ever reaches the browser.
+`AppRouter` is exported as a TypeScript type from the server. The client imports it as a type only — TypeScript uses it to generate a typed proxy, then erases it at compile time. No server code ever reaches the browser.
 
 **Deep dive:**
 
@@ -427,12 +456,12 @@ This is a Next.js App Router breaking change from earlier versions where `params
 server/routers/_app.ts
   export type AppRouter = typeof appRouter     ← type only
 
-trpc/react.tsx
+trpc/client.ts
   import type { AppRouter } from '@/server/routers/_app'
-  export const trpc = createTRPCReact<AppRouter>()
+  export const trpc = createTRPCClient<AppRouter>()
            ↑
-           TypeScript generates: trpc.product.list.useQuery(...)
-                                 trpc.product.create.useMutation(...)
+           TypeScript generates: trpc.product.list.query(...)
+                                 trpc.product.create.mutate(...)
            All typed, all erased at runtime
 ```
 
@@ -512,6 +541,15 @@ The Prisma singleton pattern stores the client on `globalThis`, ensuring only on
 **Short answer:**
 `httpBatchLink` merges concurrent tRPC calls into one HTTP request, reducing network overhead and the number of server cold starts on serverless deployments.
 
+**Deep dive:**
+When the home page first loads, the server component calls both `caller.product.list({})` and `caller.product.categories()` in parallel via `Promise.all` — these are in-process calls, no HTTP at all. On the client, if multiple calls fire simultaneously (e.g. after a mutation re-fetch), `httpBatchLink` merges them:
+
+```
+POST /api/trpc/product.list,product.categories
+```
+
+The server processes both and returns both responses in a single round-trip.
+
 ---
 
 ### Q: How would you add pagination to the product list?
@@ -578,7 +616,20 @@ For the database, use a separate test SQLite file or an in-memory database and r
 Use React Testing Library with a mocked tRPC client so tests don't need a real database.
 
 **Deep dive:**
-The tRPC client is provided via React context in `providers.tsx`. In tests, replace the provider with one pointing to a mock server (using `msw` — Mock Service Worker) or replace the `trpc` object with jest mocks.
+The vanilla `trpc` client in `src/trpc/client.ts` is a plain module export. In tests, mock it with jest:
+
+```ts
+jest.mock("@/trpc/client", () => ({
+  trpc: {
+    product: {
+      list: { query: jest.fn().mockResolvedValue([]) },
+      create: { mutate: jest.fn().mockResolvedValue({}) },
+    },
+  },
+}));
+```
+
+No context providers or query client setup is needed — there is no React context in the client layer.
 
 ---
 
@@ -595,7 +646,7 @@ The tRPC client is provided via React context in `providers.tsx`. In tests, repl
 5. **Logging** — structured server logs (e.g. `pino`) for observability.
 6. **Pagination** — `skip`/`take` on `product.list` to handle large datasets.
 7. **Rate limiting** — middleware on the API route to prevent abuse.
-8. **Optimistic updates** — update the local cache immediately on mutation for a snappier UI, roll back on error.
+8. **Optimistic updates** — update local state immediately on mutation for a snappier UI, roll back on error (instead of waiting for the re-fetch to complete).
 
 ---
 

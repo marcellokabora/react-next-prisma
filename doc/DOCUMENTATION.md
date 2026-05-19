@@ -1,6 +1,6 @@
 # Product Catalog — Full Technical Documentation
 
-> **Stack:** Next.js 16 · tRPC 11 · Prisma 7 · SQLite (via libSQL) · TanStack Query 5 · Zod 4 · Tailwind CSS 4 · TypeScript
+> **Stack:** Next.js 16 · tRPC 11 · Prisma 7 · SQLite (via libSQL) · Zod 4 · Tailwind CSS 4 · TypeScript
 
 ---
 
@@ -56,13 +56,6 @@ A library for building **end-to-end type-safe APIs** without a schema language l
 - The client calls those functions directly — TypeScript types flow from server to client automatically.
 - Under the hood it communicates over HTTP, but you never write `fetch` calls manually.
 
-### TanStack Query (React Query) 5
-
-A **data-fetching and caching library** for React.
-
-- tRPC's React adapter is built on top of it.
-- Manages loading states, caching, and cache invalidation.
-
 ### Zod 4
 
 A **schema validation library** used to validate the input of every tRPC procedure before it reaches the database.
@@ -78,9 +71,8 @@ SQLite accessed via the `@libsql/client` driver. The `@prisma/adapter-libsql` pa
 ```
 src/
 ├── app/                        ← Next.js App Router
-│   ├── layout.tsx              ← Root layout, wraps every page with <Providers>
-│   ├── page.tsx                ← Home page "/" — server component, prefetches data
-│   ├── providers.tsx           ← Sets up tRPC and React Query clients
+│   ├── layout.tsx              ← Root layout
+│   ├── page.tsx                ← Home page "/" — server component, fetches data
 │   ├── globals.css             ← Global styles (Tailwind)
 │   ├── _components/
 │   │   └── ProductsClient.tsx  ← Client component: catalog UI, tRPC hooks
@@ -102,9 +94,8 @@ src/
 │       └── product.ts          ← All product-related procedures
 │
 ├── trpc/
-│   ├── react.tsx               ← tRPC React client (browser-side hooks)
-│   ├── server.ts               ← tRPC server-side caller + HydrateClient (SSR)
-│   └── query-client.ts         ← Shared QueryClient factory
+│   ├── client.ts               ← Vanilla tRPC client (browser-side mutations)
+│   └── server.ts               ← Cached tRPC server-side caller (server components)
 │
 └── generated/
     └── prisma/                 ← Auto-generated Prisma client (do not edit)
@@ -296,118 +287,79 @@ export { handler as GET, handler as POST };
 
 ---
 
-## 6. SSR layer
+## 6. Server-side data fetching
 
-The SSR layer ensures that when a page is first loaded, the product data is already embedded in the HTML — no loading spinner, no client-side fetch on first render.
+Server components fetch data directly from the database via an in-process tRPC caller and pass it as props to client components. There is no loading spinner on first render and no hydration ceremony.
 
-### 6.1 Shared QueryClient factory — `src/trpc/query-client.ts`
-
-```ts
-import { QueryClient } from "@tanstack/react-query";
-
-export const createQueryClient = () => new QueryClient();
-```
-
-A single factory used by both the server (`src/trpc/server.ts`) and the client (`providers.tsx`) so both sides create QueryClient instances with the same configuration.
-
-### 6.2 Server-side tRPC helpers — `src/trpc/server.ts`
+### 6.1 Server-side caller — `src/trpc/server.ts`
 
 ```ts
 import "server-only";
-import { createHydrationHelpers } from "@trpc/react-query/rsc";
 import { cache } from "react";
-import { createQueryClient } from "./query-client";
 import { appRouter } from "@/server/routers/_app";
 import { createCallerFactory } from "@/server/trpc";
 
 const createCaller = createCallerFactory(appRouter);
-const getQueryClient = cache(createQueryClient);
 
-export const { trpc, HydrateClient } = createHydrationHelpers<AppRouter>(
-  createCaller({}),
-  getQueryClient,
-);
+export const getCaller = cache(() => createCaller({}));
 ```
 
 - `'server-only'` — prevents this module from ever being imported in the browser bundle.
 - `createCaller({})` — a direct tRPC caller that invokes procedures **in-process** (no HTTP, no `/api/trpc` round-trip).
-- `cache(createQueryClient)` — React's `cache()` ensures the same `QueryClient` instance is reused across the entire server render of one request.
-- `createHydrationHelpers` (from `@trpc/react-query/rsc`) returns:
-  - **`trpc`** — a server-side proxy with `.prefetch()` methods that call the DB and populate the server QueryClient.
-  - **`HydrateClient`** — a React component that serialises the server QueryClient into the HTML via `dehydrate`, and on the client deserialises it back into the client QueryClient via `HydrationBoundary`.
+- `cache()` — React's request-scoped cache ensures the same caller instance is reused across the entire server render of one request.
 
-### 6.3 How a server page uses the SSR layer
+### 6.2 How a server page uses the caller
 
 ```tsx
 // src/app/page.tsx — server component (no 'use client')
-import { trpc, HydrateClient } from "@/trpc/server";
+import { getCaller } from "@/trpc/server";
 import ProductsClient from "./_components/ProductsClient";
 
 export default async function Page() {
-  await Promise.all([
-    trpc.product.list.prefetch({}),
-    trpc.product.categories.prefetch(),
+  const caller = getCaller();
+  const [initialProducts, initialCategories] = await Promise.all([
+    caller.product.list({}),
+    caller.product.categories(),
   ]);
 
   return (
-    <HydrateClient>
-      <ProductsClient />
-    </HydrateClient>
+    <ProductsClient
+      initialProducts={initialProducts}
+      initialCategories={initialCategories}
+    />
   );
 }
 ```
 
-1. `await Promise.all([...prefetch()])` — fetches data directly from the DB and stores it in the server QueryClient. Must be awaited so data is ready before `HydrateClient` renders.
-2. `<HydrateClient>` — dehydrates the server QueryClient and embeds the data in the HTML.
-3. `<ProductsClient />` — the `'use client'` component that contains all the interactive UI and tRPC hooks. It runs on the server too (for HTML generation), finds the prefetched data in context, and renders the full product list. On the client, it rehydrates from the embedded data — no extra fetch.
+1. `getCaller()` returns the cached in-process tRPC caller — queries hit the DB directly, no HTTP.
+2. `await Promise.all([...])` — both queries run in parallel and the results are ready before the component renders.
+3. Results are passed as plain props to `<ProductsClient />` — the client component starts with all data immediately, no client-side fetch on first load.
 
 ---
 
 ## 7. Frontend — React / Next.js
 
-### 7.1 tRPC React client — `src/trpc/react.tsx`
+### 7.1 Vanilla tRPC client — `src/trpc/client.ts`
 
 ```ts
-"use client";
-import { createTRPCReact } from "@trpc/react-query";
+import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import type { AppRouter } from "@/server/routers/_app";
 
-export const trpc = createTRPCReact<AppRouter>();
+export const trpc = createTRPCClient<AppRouter>({
+  links: [httpBatchLink({ url: "/api/trpc" })],
+});
 ```
 
-`createTRPCReact<AppRouter>()` generates a fully-typed React hook for every procedure defined in `AppRouter`. The generic type parameter `<AppRouter>` is the bridge — it is a **type import only**, so the actual server code never enters the browser bundle.
+`createTRPCClient<AppRouter>()` creates a lightweight, fully-typed HTTP client. The generic type parameter `<AppRouter>` is a **type import only** — no server code enters the browser bundle. The client exposes a typed proxy: `trpc.product.create.mutate(...)`, `trpc.product.list.query(...)`, etc. These are plain async functions — no React hooks, no cache layer.
 
-### 7.2 Provider setup — `src/app/providers.tsx`
-
-```tsx
-export function Providers({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient());
-  const [trpcClient] = useState(() =>
-    trpc.createClient({
-      links: [httpBatchLink({ url: "/api/trpc" })],
-    }),
-  );
-  return (
-    <trpc.Provider client={trpcClient} queryClient={queryClient}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    </trpc.Provider>
-  );
-}
-```
-
-- **`QueryClient`** — the TanStack Query cache. One instance per browser session.
-- **`trpcClient`** — the low-level HTTP client configured with `httpBatchLink`.
-- **`httpBatchLink`** — automatically **batches** multiple tRPC calls that happen at the same time into a single HTTP request, reducing round-trips.
-- Both providers wrap the entire app via `layout.tsx`.
-
-### 7.3 Client components
+### 7.2 Client components
 
 All interactive UI lives in `'use client'` components under `_components/`:
 
-- **`src/app/_components/ProductsClient.tsx`** — catalog page UI: product grid, category filter, add form, delete buttons. Uses `trpc.product.list.useQuery`, `trpc.product.categories.useQuery`, `trpc.product.create.useMutation`, and `trpc.product.delete.useMutation`.
-- **`src/app/products/[id]/_components/ProductClient.tsx`** — product detail UI: displays product data and a delete button. Uses `trpc.product.getById.useQuery` and `trpc.product.delete.useMutation`.
+- **`src/app/_components/ProductsClient.tsx`** — catalog page UI: product grid, category filter, add form, delete buttons. Receives `initialProducts` and `initialCategories` as props, stores them in local state, and calls `trpc.product.create.mutate` / `trpc.product.delete.mutate` for mutations. After each mutation it re-fetches the list and categories via `trpc.product.list.query` and updates state.
+- **`src/app/products/[id]/_components/ProductClient.tsx`** — product detail UI: receives the `product` as a prop from the server page, displays it, and calls `trpc.product.delete.mutate` then redirects on success.
 
-Both receive their initial data instantly from the cache populated by `HydrateClient`. After mutations, `utils.product.list.invalidate()` marks the cache stale and triggers a background refetch to keep the UI in sync.
+There is no cache layer or context provider. Mutations call the HTTP API, then the component re-fetches fresh data and updates local state directly.
 
 ---
 
@@ -421,11 +373,11 @@ Browser
   │  1. User fills the form and clicks "Add Product"
   │
   ▼
-page.tsx
-  │  create.mutate({ name, price, category, description })
+ProductsClient.tsx — handleSubmit()
+  │  await trpc.product.create.mutate({ name, price, category, description })
   │
   ▼
-@trpc/react-query (httpBatchLink)
+@trpc/client (httpBatchLink)
   │  Serialises the call to:
   │  POST /api/trpc/product.create
   │  Body: { "0": { name, price, category, description } }
@@ -454,8 +406,10 @@ libSQL / SQLite
   │
   ▼  (response travels back up the chain)
   │
-page.tsx — onSuccess callback
-  utils.product.list.invalidate()       // triggers background refetch
-  utils.product.categories.invalidate() // triggers background refetch
-  setForm({ name:'', price:'', ... })   // resets the form
+ProductsClient.tsx — after await resolves
+  await trpc.product.list.query({ category })      // re-fetches the list
+  await trpc.product.categories.query()            // re-fetches categories
+  setProducts(newProducts)                         // updates local state
+  setCategories(newCategories)                     // updates local state
+  setForm({ name:'', price:'', ... })              // resets the form
 ```
