@@ -11,6 +11,12 @@ export default function ProductsClient() {
     category: '',
     description: '',
   })
+  const [errors, setErrors] = useState({
+    name: '',
+    price: '',
+    category: '',
+    description: '',
+  })
 
   const utils = trpc.useUtils()
 
@@ -22,6 +28,7 @@ export default function ProductsClient() {
       utils.product.list.invalidate()
       utils.product.categories.invalidate()
       setForm({ name: '', price: '', category: '', description: '' })
+      setErrors({ name: '', price: '', category: '', description: '' })
     },
   })
 
@@ -32,9 +39,24 @@ export default function ProductsClient() {
     },
   })
 
+  function validate() {
+    const newErrors = { name: '', price: '', category: '', description: '' }
+    if (!form.name.trim()) newErrors.name = 'Name is required.'
+    if (!form.price) {
+      newErrors.price = 'Price is required.'
+    } else if (isNaN(parseFloat(form.price)) || parseFloat(form.price) < 0) {
+      newErrors.price = 'Price must be a positive number.'
+    }
+    if (!form.category.trim()) newErrors.category = 'Category is required.'
+    if (form.description.length > 50)
+      newErrors.description = `Description must be 50 characters or fewer (${form.description.length}/50).`
+    setErrors(newErrors)
+    return Object.values(newErrors).every((e) => e === '')
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.name || !form.price || !form.category) return
+    if (!validate()) return
     create.mutate({
       name: form.name,
       price: parseFloat(form.price),
@@ -64,33 +86,57 @@ export default function ProductsClient() {
       <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
         <h2 className="font-semibold text-gray-700">Add Product</h2>
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-3">
-          <input
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Name *"
-            value={form.name}
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          />
-          <input
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Price *"
-            type="number"
-            step="0.01"
-            min="0"
-            value={form.price}
-            onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
-          />
-          <input
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Category *"
-            value={form.category}
-            onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-          />
-          <input
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Description (optional)"
-            value={form.description}
-            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-          />
+          <div className="flex flex-col gap-1">
+            <input
+              className={`border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.name ? 'border-red-400' : 'border-gray-300'}`}
+              placeholder="Name *"
+              value={form.name}
+              onChange={(e) => {
+                setForm((f) => ({ ...f, name: e.target.value }))
+                if (errors.name) setErrors((err) => ({ ...err, name: '' }))
+              }}
+            />
+            {errors.name && <p className="text-red-500 text-xs">{errors.name}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <input
+              className={`border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.price ? 'border-red-400' : 'border-gray-300'}`}
+              placeholder="Price *"
+              type="number"
+              step="0.01"
+              min="0"
+              value={form.price}
+              onChange={(e) => {
+                setForm((f) => ({ ...f, price: e.target.value }))
+                if (errors.price) setErrors((err) => ({ ...err, price: '' }))
+              }}
+            />
+            {errors.price && <p className="text-red-500 text-xs">{errors.price}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <input
+              className={`border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.category ? 'border-red-400' : 'border-gray-300'}`}
+              placeholder="Category *"
+              value={form.category}
+              onChange={(e) => {
+                setForm((f) => ({ ...f, category: e.target.value }))
+                if (errors.category) setErrors((err) => ({ ...err, category: '' }))
+              }}
+            />
+            {errors.category && <p className="text-red-500 text-xs">{errors.category}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <input
+              className={`border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.description ? 'border-red-400' : 'border-gray-300'}`}
+              placeholder="Description (optional, max 50 chars)"
+              value={form.description}
+              onChange={(e) => {
+                setForm((f) => ({ ...f, description: e.target.value }))
+                if (errors.description) setErrors((err) => ({ ...err, description: '' }))
+              }}
+            />
+            {errors.description && <p className="text-red-500 text-xs">{errors.description}</p>}
+          </div>
           <button
             type="submit"
             disabled={create.isPending}
