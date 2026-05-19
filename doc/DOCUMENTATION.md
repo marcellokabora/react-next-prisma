@@ -13,7 +13,6 @@
 5. [API layer — tRPC](#5-api-layer--trpc)
 6. [Frontend — React / Next.js](#6-frontend--react--nextjs)
 7. [End-to-end data flow](#7-end-to-end-data-flow)
-8. [Key concepts for the interview](#8-key-concepts-for-the-interview)
 
 ---
 
@@ -413,56 +412,3 @@ page.tsx — onSuccess callback
   utils.product.categories.invalidate() // triggers background refetch
   setForm({ name:'', price:'', ... })   // resets the form
 ```
-
----
-
-## 8. Key concepts for the interview
-
-### Why tRPC instead of REST?
-
-With REST you would write: a route handler, a `fetch` call, manual TypeScript types for the request/response, and error handling. With tRPC, the server function **is** the API. Types are inferred automatically — if you rename a field on the server, TypeScript immediately flags every broken call on the client.
-
-### Why Prisma instead of raw SQL?
-
-Prisma gives you:
-
-- **Type safety** — queries return fully-typed objects matching your schema models.
-- **Auto-complete** — your editor knows every field and relation.
-- **Migrations** — schema changes are versioned and reproducible.
-- **No SQL injection** — parameterised queries are used internally by default.
-
-### What is `httpBatchLink`?
-
-When a React component mounts and calls three queries at once, `httpBatchLink` merges them into a single HTTP request:
-
-```
-POST /api/trpc/product.list,product.categories
-```
-
-The server processes both and returns both responses together, cutting latency.
-
-### How do types flow from server to client without sharing runtime code?
-
-```
-AppRouter (type only, exported from _app.ts)
-    │
-    │  imported as type in trpc/react.tsx
-    │
-createTRPCReact<AppRouter>()
-    │
-    generates typed hooks: trpc.product.list.useQuery(...)
-```
-
-The `AppRouter` type never reaches the browser bundle — TypeScript erases it at compile time. Only the tRPC client HTTP call code ships to the browser.
-
-### What is cache invalidation and why does it matter?
-
-TanStack Query caches every query by its key (e.g. `["product","list",{}]`). After a mutation succeeds, calling `utils.product.list.invalidate()` marks that cache entry as stale. React Query then automatically refetches in the background and updates the UI. This keeps the client in sync with the server without a full page reload or manual state management.
-
-### Zod input validation
-
-Every tRPC procedure that accepts input runs it through a Zod schema **on the server** before executing the handler. This means:
-
-- Invalid data (e.g. a negative price) never reaches the database.
-- The client gets structured error messages automatically.
-- You get TypeScript types for `input` inside the handler for free, inferred from the Zod schema.
