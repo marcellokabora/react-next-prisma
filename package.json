@@ -1,5 +1,5 @@
 {
-  "name": "emotion",
+  "name": "next-prisma-trpc",
   "version": "0.1.0",
   "private": true,
   "scripts": {
