@@ -1,29 +1,19 @@
 'use client'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
-import { trpc } from '@/trpc/client'
-type Product = {
-  id: number
-  name: string
-  price: number
-  category: string
-  description: string | null
-  createdAt: Date
-}
+import { useTransition } from 'react'
+import { deleteProduct } from '@/app/_actions/product'
+import type { Product } from '@/generated/prisma/client'
 
 export default function ProductClient({ product }: { product: Product }) {
   const router = useRouter()
-  const [isDeleting, setIsDeleting] = useState(false)
+  const [isPending, startTransition] = useTransition()
 
-  async function handleDelete() {
-    setIsDeleting(true)
-    try {
-      await trpc.product.delete.mutate({ id: product.id })
+  function handleDelete() {
+    startTransition(async () => {
+      await deleteProduct(product.id)
       router.push('/')
-    } catch {
-      setIsDeleting(false)
-    }
+    })
   }
 
   return (
@@ -67,10 +57,10 @@ export default function ProductClient({ product }: { product: Product }) {
         <h2 className="text-sm font-semibold text-red-700">Danger zone</h2>
         <button
           onClick={handleDelete}
-          disabled={isDeleting}
+          disabled={isPending}
           className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
         >
-          {isDeleting ? 'Deleting…' : 'Delete product'}
+          {isPending ? 'Deleting…' : 'Delete product'}
         </button>
       </div>
     </main>
