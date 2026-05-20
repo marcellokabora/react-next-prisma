@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
+import { TRPCError } from '@trpc/server'
+import { router, publicProcedure, protectedProcedure } from '../trpc'
 import { db } from '../db'
 
 export const productRouter = router({
@@ -20,7 +21,7 @@ export const productRouter = router({
     return rows.map((r) => r.category)
   }),
 
-  create: publicProcedure
+  create: protectedProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -29,7 +30,9 @@ export const productRouter = router({
         description: z.string().optional(),
       })
     )
-    .mutation(({ input }) => db.product.create({ data: input })),
+    .mutation(({ input, ctx }) =>
+      db.product.create({ data: { ...input, authorEmail: ctx.user.email } })
+    ),
 
   getById: publicProcedure
     .input(z.object({ id: z.number() }))
@@ -37,7 +40,34 @@ export const productRouter = router({
       db.product.findUnique({ where: { id: input.id } })
     ),
 
-  delete: publicProcedure
+  update: protectedProcedure
+    .input(
+      z.object({
+        id: z.number(),
+        name: z.string().min(1),
+        price: z.number().positive(),
+        category: z.string().min(1),
+        description: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const product = await db.product.findUnique({ where: { id: input.id } })
+      if (!product) throw new TRPCError({ code: 'NOT_FOUND' })
+      if (product.authorEmail && product.authorEmail !== ctx.user.email) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only edit your own products.' })
+      }
+      const { id, ...data } = input
+      return db.product.update({ where: { id }, data })
+    }),
+
+  delete: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(({ input }) => db.product.delete({ where: { id: input.id } })),
+    .mutation(async ({ input, ctx }) => {
+      const product = await db.product.findUnique({ where: { id: input.id } })
+      if (!product) throw new TRPCError({ code: 'NOT_FOUND' })
+      if (product.authorEmail && product.authorEmail !== ctx.user.email) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only delete your own products.' })
+      }
+      return db.product.delete({ where: { id: input.id } })
+    }),
 })

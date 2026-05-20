@@ -2,13 +2,28 @@
 import { useOptimistic, useActionState, useTransition, useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { createProduct, deleteProduct, type CreateProductState } from '@/app/_actions/product'
+import { logout } from '@/app/_actions/auth'
 import type { Product } from '@/generated/prisma/client'
+
+function LogoutButton() {
+  const [isPending, startTransition] = useTransition()
+  return (
+    <button
+      onClick={() => startTransition(() => logout())}
+      disabled={isPending}
+      className="px-4 py-1.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium transition-colors"
+    >
+      {isPending ? 'Signing out…' : 'Sign out'}
+    </button>
+  )
+}
 
 interface Props {
   initialProducts: Product[]
+  currentUserEmail: string | null
 }
 
-export default function ProductsClient({ initialProducts }: Props) {
+export default function ProductsClient({ initialProducts, currentUserEmail }: Props) {
   const [form, setForm] = useState({ name: '', price: '', category: '', description: '' })
   const [fieldErrors, setFieldErrors] = useState({ name: '', price: '', category: '', description: '' })
 
@@ -81,6 +96,7 @@ export default function ProductsClient({ initialProducts }: Props) {
       category: form.category,
       description: form.description || null,
       createdAt: new Date(),
+      authorEmail: currentUserEmail,
     }
     startCreateTransition(() => {
       addOptimistic({ type: 'create', product: tempProduct })
@@ -100,23 +116,45 @@ export default function ProductsClient({ initialProducts }: Props) {
   return (
     <main className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Header */}
-      <div className="space-y-1">
-        <h1 className="text-3xl font-bold text-gray-900">Product Catalog</h1>
-        <div className="flex flex-wrap gap-2">
-          {['Next.js', 'tRPC', 'Prisma', 'SQLite', 'TypeScript'].map((tag) => (
-            <span
-              key={tag}
-              className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-800"
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold text-gray-900">Product Catalog</h1>
+          <div className="flex flex-wrap gap-2">
+            {['Next.js', 'tRPC', 'Prisma', 'SQLite', 'TypeScript'].map((tag) => (
+              <span
+                key={tag}
+                className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-800"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 pt-1">
+          {currentUserEmail ? (
+            <>
+              <span className="text-xs text-gray-500 hidden sm:block">{currentUserEmail}</span>
+              <LogoutButton />
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
             >
-              {tag}
-            </span>
-          ))}
+              Sign in
+            </Link>
+          )}
         </div>
       </div>
 
       {/* Add product form */}
       <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
         <h2 className="font-semibold text-gray-700">Add Product</h2>
+        {!currentUserEmail ? (
+          <p className="text-sm text-gray-500">
+            <Link href="/login" className="text-blue-600 hover:underline">Sign in</Link> to add products.
+          </p>
+        ) : (
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1">
             <input
@@ -188,6 +226,7 @@ export default function ProductsClient({ initialProducts }: Props) {
             <p className="col-span-2 text-red-600 text-xs">{createState.error}</p>
           )}
         </form>
+        )}
       </section>
 
       {/* Category filter — instant, client-side */}
@@ -257,13 +296,15 @@ export default function ProductsClient({ initialProducts }: Props) {
                       {new Date(p.createdAt).toLocaleDateString()}
                     </span>
                   )}
-                  <button
-                    onClick={(e) => { e.preventDefault(); handleDelete(p.id) }}
-                    disabled={isPendingDelete || isPending}
-                    className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 transition-colors cursor-pointer"
-                  >
-                    Delete
-                  </button>
+                  {currentUserEmail && p.authorEmail === currentUserEmail && (
+                    <button
+                      onClick={(e) => { e.preventDefault(); handleDelete(p.id) }}
+                      disabled={isPendingDelete || isPending}
+                      className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 transition-colors cursor-pointer"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </Link>
             )

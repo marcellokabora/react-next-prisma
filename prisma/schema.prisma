@@ -7,6 +7,14 @@ datasource db {
   provider = "sqlite"
 }
 
+model User {
+  id             Int       @id @default(autoincrement())
+  email          String    @unique
+  hashedPassword String
+  createdAt      DateTime  @default(now())
+  products       Product[]
+}
+
 model Product {
   id          Int      @id @default(autoincrement())
   name        String
@@ -14,4 +22,6 @@ model Product {
   category    String
   description String?
   createdAt   DateTime @default(now())
+  authorEmail String?
+  author      User?    @relation(fields: [authorEmail], references: [email])
 }

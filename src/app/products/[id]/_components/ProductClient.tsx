@@ -5,9 +5,17 @@ import { useTransition } from 'react'
 import { deleteProduct } from '@/app/_actions/product'
 import type { Product } from '@/generated/prisma/client'
 
-export default function ProductClient({ product }: { product: Product }) {
+export default function ProductClient({
+  product,
+  currentUserEmail,
+}: {
+  product: Product
+  currentUserEmail: string | null
+}) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  const isAuthor = !!currentUserEmail && product.authorEmail === currentUserEmail
 
   function handleDelete() {
     startTransition(async () => {
@@ -48,20 +56,42 @@ export default function ProductClient({ product }: { product: Product }) {
               day: 'numeric',
             })}
           </span>
-          <span className="text-xs text-gray-400">ID #{product.id}</span>
+          <div className="flex items-center gap-3">
+            {product.authorEmail && (
+              <span className="text-xs text-gray-400">by {product.authorEmail}</span>
+            )}
+            <span className="text-xs text-gray-400">ID #{product.id}</span>
+          </div>
         </div>
       </div>
 
-      {/* Danger zone */}
-      <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
-        <button
-          onClick={handleDelete}
-          disabled={isPending}
-          className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-        >
-          {isPending ? 'Deleting…' : 'Delete product'}
-        </button>
-      </div>
+      {/* Author actions */}
+      {isAuthor && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+          <p className="text-xs text-red-600 font-medium">Author actions</p>
+          <div className="flex gap-3">
+            <Link
+              href={`/products/${product.id}/edit`}
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+            >
+              Edit product
+            </Link>
+            <button
+              onClick={handleDelete}
+              disabled={isPending}
+              className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+            >
+              {isPending ? 'Deleting…' : 'Delete product'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!currentUserEmail && (
+        <p className="text-sm text-gray-400 text-center">
+          <Link href="/login" className="text-blue-600 hover:underline">Sign in</Link> to manage your products.
+        </p>
+      )}
     </main>
   )
 }
