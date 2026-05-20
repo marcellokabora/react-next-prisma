@@ -86,6 +86,8 @@ export default function ProductsClient({ initialProducts }: Props) {
       addOptimistic({ type: 'create', product: tempProduct })
       dispatch({ name: form.name, price: form.price, category: form.category, description: form.description })
     })
+    setForm({ name: '', price: '', category: '', description: '' })
+    setFieldErrors({ name: '', price: '', category: '', description: '' })
   }
 
   function handleDelete(id: number) {
@@ -258,7 +260,7 @@ export default function ProductsClient({ initialProducts }: Props) {
                   <button
                     onClick={(e) => { e.preventDefault(); handleDelete(p.id) }}
                     disabled={isPendingDelete || isPending}
-                    className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 transition-colors"
+                    className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 transition-colors cursor-pointer"
                   >
                     Delete
                   </button>

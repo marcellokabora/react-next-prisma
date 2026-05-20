@@ -10,6 +10,8 @@ export default async function ProductPage({
   const { id } = await params
   const productId = parseInt(id, 10)
 
+  // await new Promise((resolve) => setTimeout(resolve, 2000))
+
   const caller = getCaller()
   const product = await caller.product.getById({ id: productId })
 

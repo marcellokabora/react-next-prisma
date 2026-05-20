@@ -17,9 +17,9 @@ export default function ProductClient({ product }: { product: Product }) {
   }
 
   return (
-    <main className="max-w-2xl mx-auto p-6 space-y-6">
+    <main className="max-w-2xl mx-auto p-6 space-y-4">
       {/* Back link */}
-      <Link href="/" className="text-sm text-blue-600 hover:underline">
+      <Link href="/" className="text-sm text-blue-600 hover:underline inline-block">
         ← Back to catalog
       </Link>
 
@@ -54,7 +54,6 @@ export default function ProductClient({ product }: { product: Product }) {
 
       {/* Danger zone */}
       <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
-        <h2 className="text-sm font-semibold text-red-700">Danger zone</h2>
         <button
           onClick={handleDelete}
           disabled={isPending}
