@@ -15,6 +15,7 @@
 7. [Server-side data fetching and caching](#7-server-side-data-fetching-and-caching)
 8. [Frontend — React / Next.js](#8-frontend--react--nextjs)
 9. [End-to-end data flows](#9-end-to-end-data-flows)
+10. [Production readiness](#10-production-readiness)
 
 ---
 
@@ -121,7 +122,6 @@ src/
 │   └── session.ts              ← JWT session: encrypt, decrypt, createSession, deleteSession, getSession
 │
 ├── trpc/
-│   ├── client.ts               ← Vanilla tRPC client (browser-side HTTP calls)
 │   └── server.ts               ← Session-aware tRPC server-side caller
 │
 └── generated/
@@ -394,12 +394,17 @@ export type AppRouter = typeof appRouter;
 ### 6.4 HTTP handler — `src/app/api/trpc/[trpc]/route.ts`
 
 ```ts
-const handler = (req: Request) =>
+const handler = async (req: Request) =>
   fetchRequestHandler({
     endpoint: "/api/trpc",
     req,
     router: appRouter,
-    createContext: () => ({}),
+    createContext: async (): Promise<Context> => {
+      const session = await getSession();
+      return {
+        user: session ? { id: session.userId, email: session.email } : null,
+      };
+    },
   });
 
 export { handler as GET, handler as POST };
@@ -527,18 +532,11 @@ You can verify this in the browser: run `next build && next start`, open DevTool
 
 ## 8. Frontend — React / Next.js
 
-### 8.1 Vanilla tRPC client — `src/trpc/client.ts`
+### 8.1 Mutations via Server Actions
 
-```ts
-import { createTRPCClient, httpBatchLink } from "@trpc/client";
-import type { AppRouter } from "@/server/routers/_app";
+All mutations (create, update, delete) are handled by **Server Actions** in `src/app/_actions/product.ts`. Client components call them directly via `useActionState` — no HTTP client or `fetch` call is written by hand.
 
-export const trpc = createTRPCClient<AppRouter>({
-  links: [httpBatchLink({ url: "/api/trpc" })],
-});
-```
-
-`<AppRouter>` is a **type import only** — no server code enters the browser bundle. The client exposes a typed proxy: `trpc.product.create.mutate(...)`, etc.
+`AppRouter` is only ever imported as a **TypeScript type** in `src/trpc/server.ts` — no server code reaches the browser bundle.
 
 ### 8.2 Client components
 
@@ -616,3 +614,21 @@ Client side (useOptimistic)
   └─ addOptimistic({ type: 'create', product: optimisticProduct })
        └─ list updates instantly, before the server round-trip completes
 ```
+
+---
+
+## 10. Production readiness
+
+The following improvements would be needed before running this app in a production environment:
+
+1. **Security headers** — add `X-Frame-Options`, `X-Content-Type-Options`, and `Strict-Transport-Security` via `headers()` in `next.config.ts`. _(Authentication and `protectedProcedure` are already implemented.)_
+2. **Auto-run migrations** — add `prisma migrate deploy` to the `start` script so the database schema is always up to date on deploy:
+   ```json
+   "start": "prisma migrate deploy && next start"
+   ```
+3. **Environment validation** — use `@t3-oss/env-nextjs` to validate all env vars at build time with a meaningful error message instead of crashing at runtime.
+4. **Error handling** — add a global tRPC error formatter to return consistent error shapes across all procedures.
+5. **Logging** — add structured server logs (e.g. `pino`) for observability and debugging in production.
+6. **Pagination** — add `skip`/`take` (or cursor-based) parameters to the `product.list` procedure to handle large datasets safely.
+7. **Rate limiting** — add middleware on the API route (`/api/trpc/`) to prevent abuse and brute-force attacks.
+8. **Error boundaries** — wrap client islands in React `<ErrorBoundary>` components to prevent a runtime error from crashing the whole page. _(Optimistic updates via `useOptimistic` are already implemented.)_
