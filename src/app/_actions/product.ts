@@ -1,7 +1,7 @@
 'use server'
 import { z } from 'zod'
 import { getCaller } from '@/trpc/server'
-import { revalidatePath } from 'next/cache'
+import { revalidatePath, updateTag } from 'next/cache'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 import type { inferRouterInputs } from '@trpc/server'
@@ -62,7 +62,7 @@ export async function createProduct(
         const caller = await getCaller()
         await sleep(1500)
         await caller.product.create(result.data)
-        revalidatePath('/')
+        updateTag('products')
         return { success: true }
     } catch (err) {
         return { error: err instanceof Error ? err.message : 'Failed to add product.' }
@@ -73,7 +73,7 @@ export async function deleteProduct(id: number): Promise<void> {
     const caller = await getCaller()
     await sleep(1500)
     await caller.product.delete({ id })
-    revalidatePath('/')
+    updateTag('products')
     revalidatePath(`/products/${id}`)
 }
 
@@ -128,7 +128,7 @@ export async function updateProduct(
     try {
         const caller = await getCaller()
         await caller.product.update(result.data)
-        revalidatePath('/')
+        updateTag('products')
         revalidatePath(`/products/${result.data.id}`)
         return { success: true }
     } catch (err) {

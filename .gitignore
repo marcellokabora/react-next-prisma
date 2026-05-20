@@ -38,6 +38,9 @@ yarn-error.log*
 *.db-shm
 *.db-wal
 
+# Interview prep (private notes)
+doc/INTERVIEW_PREP.md
+
 # vercel
 .vercel
 

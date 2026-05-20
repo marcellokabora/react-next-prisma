@@ -1,6 +1,6 @@
 # Product Catalog — Full Technical Documentation
 
-> **Stack:** Next.js 16 · tRPC 11 · Prisma 7 · SQLite (via libSQL) · Zod 4 · Tailwind CSS 4 · TypeScript
+> **Stack:** Next.js 16 · tRPC 11 · Prisma 7 · SQLite (via libSQL) · Zod 4 · Tailwind CSS 4 · TypeScript · bcryptjs · jose
 
 ---
 
@@ -10,23 +10,25 @@
 2. [Tech stack explained](#2-tech-stack-explained)
 3. [Project structure](#3-project-structure)
 4. [Database layer — Prisma](#4-database-layer--prisma)
-5. [API layer — tRPC](#5-api-layer--trpc)
-6. [SSR layer](#6-ssr-layer)
-7. [Frontend — React / Next.js](#7-frontend--react--nextjs)
-8. [End-to-end data flow](#8-end-to-end-data-flow)
+5. [Authentication](#5-authentication)
+6. [API layer — tRPC](#6-api-layer--trpc)
+7. [Server-side data fetching and caching](#7-server-side-data-fetching-and-caching)
+8. [Frontend — React / Next.js](#8-frontend--react--nextjs)
+9. [End-to-end data flows](#9-end-to-end-data-flows)
 
 ---
 
 ## 1. What the app does
 
-A minimal **Product Catalog** CRUD application with two pages:
+A **Product Catalog** CRUD application with authentication. Users must register or log in before they can create, edit, or delete products. Products are owned by the user who created them.
 
-| Route            | Description                                                                |
-| ---------------- | -------------------------------------------------------------------------- |
-| `/`              | List all products, filter by category, add a new product, delete a product |
-| `/products/[id]` | View the detail of a single product and delete it                          |
+| Route            | Auth required           | Description                                                     |
+| ---------------- | ----------------------- | --------------------------------------------------------------- |
+| `/`              | No (read) / Yes (write) | List all products, filter by category; add/delete require login |
+| `/login`         | No                      | Combined sign-in / register form                                |
+| `/products/[id]` | No (read) / Yes (write) | View product detail; edit/delete require ownership              |
 
-All data is persisted in an **SQLite database** through Prisma, and every client-server call goes through **tRPC** — there are no REST endpoints written by hand.
+All data is persisted in an **SQLite database** through Prisma. Mutations go through **tRPC** Server Actions — there are no REST endpoints written by hand. The home page uses **Next.js Data Cache** (`unstable_cache`) to protect the database from read spikes.
 
 ---
 
@@ -38,6 +40,8 @@ The React framework that provides:
 
 - **App Router** — file-system based routing under `src/app/`.
 - **API Routes** — server-side HTTP handlers under `src/app/api/`.
+- **Server Actions** — async server functions called directly from client components via `'use server'` — used for all mutations (create, update, delete, login, register, logout).
+- **Data Cache / `unstable_cache`** — a server-side in-memory cache that deduplicates and memoises database reads across requests.
 - Server and client components coexist in the same project.
 
 ### Prisma 7
@@ -55,10 +59,19 @@ A library for building **end-to-end type-safe APIs** without a schema language l
 - You define procedures (functions) on the server.
 - The client calls those functions directly — TypeScript types flow from server to client automatically.
 - Under the hood it communicates over HTTP, but you never write `fetch` calls manually.
+- Procedures are split into `publicProcedure` (anyone) and `protectedProcedure` (logged-in users only).
 
 ### Zod 4
 
-A **schema validation library** used to validate the input of every tRPC procedure before it reaches the database.
+A **schema validation library** used to validate the input of every tRPC procedure and every Server Action before it reaches the database.
+
+### bcryptjs
+
+Used to **hash passwords** before storing them in the database and to verify passwords on login. Never stores plain-text passwords.
+
+### jose
+
+A pure-JavaScript library for working with **JSON Web Tokens (JWT)**. Used to sign and verify the session cookie that keeps users logged in.
 
 ### libSQL / Turso adapter
 
@@ -72,15 +85,25 @@ SQLite accessed via the `@libsql/client` driver. The `@prisma/adapter-libsql` pa
 src/
 ├── app/                        ← Next.js App Router
 │   ├── layout.tsx              ← Root layout
-│   ├── page.tsx                ← Home page "/" — server component, fetches data
+│   ├── page.tsx                ← Home page "/" — server component, reads from cache
 │   ├── globals.css             ← Global styles (Tailwind)
+│   ├── _actions/
+│   │   ├── auth.ts             ← Server Actions: login, register, logout
+│   │   └── product.ts          ← Server Actions: createProduct, updateProduct, deleteProduct
 │   ├── _components/
-│   │   └── ProductsClient.tsx  ← Client component: catalog UI, tRPC hooks
+│   │   └── ProductsClient.tsx  ← Client component: catalog UI, optimistic updates
+│   ├── login/
+│   │   ├── page.tsx            ← Login / register page — server component
+│   │   └── _components/
+│   │       └── AuthForm.tsx    ← Client component: tabbed sign-in/register form
 │   ├── products/
 │   │   └── [id]/
-│   │       ├── page.tsx        ← Product detail page — server component, prefetches data
+│   │       ├── page.tsx        ← Product detail page — server component
+│   │       ├── loading.tsx     ← Skeleton shown while the page streams
 │   │       └── _components/
-│   │           └── ProductClient.tsx ← Client component: detail UI, tRPC hooks
+│   │           ├── ProductClient.tsx      ← Client component: detail UI
+│   │           └── edit/
+│   │               └── EditProductForm.tsx ← Client component: edit form
 │   └── api/
 │       └── trpc/
 │           └── [trpc]/
@@ -88,14 +111,18 @@ src/
 │
 ├── server/                     ← Server-only code (never imported by the browser)
 │   ├── db.ts                   ← Prisma client singleton
-│   ├── trpc.ts                 ← tRPC initialisation + createCallerFactory
+│   ├── queries.ts              ← unstable_cache wrapped Prisma queries
+│   ├── trpc.ts                 ← tRPC initialisation, context type, publicProcedure, protectedProcedure
 │   └── routers/
 │       ├── _app.ts             ← Root router (combines all sub-routers)
 │       └── product.ts          ← All product-related procedures
 │
+├── lib/
+│   └── session.ts              ← JWT session: encrypt, decrypt, createSession, deleteSession, getSession
+│
 ├── trpc/
-│   ├── client.ts               ← Vanilla tRPC client (browser-side mutations)
-│   └── server.ts               ← Cached tRPC server-side caller (server components)
+│   ├── client.ts               ← Vanilla tRPC client (browser-side HTTP calls)
+│   └── server.ts               ← Session-aware tRPC server-side caller
 │
 └── generated/
     └── prisma/                 ← Auto-generated Prisma client (do not edit)
@@ -103,6 +130,8 @@ src/
 prisma/
 ├── schema.prisma               ← Database schema definition
 └── migrations/                 ← SQL migration history
+    ├── 20260519082738_init/
+    └── 20260520143304_add_user_auth/
 ```
 
 ---
@@ -114,11 +143,19 @@ prisma/
 ```prisma
 generator client {
   provider = "prisma-client"
-  output   = "../src/generated/prisma"   // where to write the generated client
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
-  provider = "sqlite"                    // database engine
+  provider = "sqlite"
+}
+
+model User {
+  id             Int       @id @default(autoincrement())
+  email          String    @unique
+  hashedPassword String
+  createdAt      DateTime  @default(now())
+  products       Product[]
 }
 
 model Product {
@@ -126,29 +163,39 @@ model Product {
   name        String
   price       Float
   category    String
-  description String?                    // optional field (nullable)
+  description String?
   createdAt   DateTime @default(now())
+  authorEmail String?
+  author      User?    @relation(fields: [authorEmail], references: [email])
 }
 ```
 
-- The `generator` block tells Prisma to generate the TypeScript client into `src/generated/prisma/`.
-- The `datasource` block declares the database engine (SQLite).
-- Each `model` becomes a database table **and** a TypeScript type.
+- `User` stores credentials. `hashedPassword` is a bcrypt hash — the plain-text password is never persisted.
+- `Product.authorEmail` is a nullable foreign key back to `User.email`. Nullable so that products created before auth was added are still valid.
+- The `author` / `products` fields are Prisma relation helpers — they don't create extra columns.
 
-### 4.2 Migration — `prisma/migrations/20260519082738_init/migration.sql`
+### 4.2 Migrations
+
+**`20260519082738_init`** — initial schema, `Product` table only.
+
+**`20260520143304_add_user_auth`** — adds the `User` table and the `authorEmail` foreign key column on `Product`:
 
 ```sql
-CREATE TABLE "Product" (
-    "id"          INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "name"        TEXT     NOT NULL,
-    "price"       REAL     NOT NULL,
-    "category"    TEXT     NOT NULL,
-    "description" TEXT,
-    "createdAt"   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE "User" (
+    "id"             INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "email"          TEXT     NOT NULL,
+    "hashedPassword" TEXT     NOT NULL,
+    "createdAt"      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Product table rebuilt to add the foreign key column
+ALTER TABLE "new_Product" ADD COLUMN "authorEmail" TEXT
+    REFERENCES "User"("email") ON DELETE SET NULL ON UPDATE CASCADE;
+
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 ```
 
-Prisma generated this SQL automatically from the schema. Running `prisma migrate dev` applies it to the database and records it in the `migrations/` folder so the history is version-controlled.
+`ON DELETE SET NULL` means deleting a user orphans their products rather than cascading the delete.
 
 ### 4.3 Prisma client singleton — `src/server/db.ts`
 
@@ -171,104 +218,182 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = db;
 **Why the singleton pattern?**
 During development, Next.js hot-reloads modules frequently. Without the singleton, every reload would open a new database connection, quickly exhausting the connection limit. Storing `db` on `globalThis` ensures only one instance is ever created per Node.js process.
 
-**`DATABASE_URL`** — the libSQL connection string stored in `.env` (e.g. `file:./dev.db` for a local file).
+---
+
+## 5. Authentication
+
+Authentication is implemented with **stateless JWT sessions** stored in an `httpOnly` cookie. There is no session table in the database.
+
+### 5.1 Session management — `src/lib/session.ts`
+
+```ts
+import { SignJWT, jwtVerify } from "jose";
+import { cookies } from "next/headers";
+
+const secretKey = process.env.SESSION_SECRET ?? "dev-secret-change-in-production-32ch";
+const encodedKey = new TextEncoder().encode(secretKey);
+
+// Signs a JWT containing userId + email, expires in 7 days
+export async function encrypt(payload: SessionPayload) { ... }
+
+// Verifies the JWT and returns the payload, or null if invalid/expired
+export async function decrypt(session: string | undefined) { ... }
+
+// Sets the signed JWT as an httpOnly cookie
+export async function createSession(userId: number, email: string) {
+  const token = await encrypt({ userId, email, expiresAt });
+  cookieStore.set("session", token, { httpOnly: true, secure: true, sameSite: "lax" });
+}
+
+// Deletes the session cookie (logout)
+export async function deleteSession() { ... }
+
+// Reads and verifies the cookie — returns { userId, email } or null
+export async function getSession() { ... }
+```
+
+**Key security properties:**
+
+- `httpOnly: true` — the cookie is invisible to JavaScript; XSS attacks cannot steal it.
+- `secure: true` in production — the cookie is only sent over HTTPS.
+- `sameSite: 'lax'` — blocks cross-site POST requests (CSRF protection).
+- The JWT is **signed** with `HS256` using `SESSION_SECRET`. Tampering with the payload invalidates the signature.
+
+### 5.2 Auth Server Actions — `src/app/_actions/auth.ts`
+
+All three actions are `'use server'` functions called directly from the `<AuthForm />` client component.
+
+```ts
+export async function login(
+  _prev: AuthState,
+  formData: FormData,
+): Promise<AuthState> {
+  // 1. Validate email + password shape with Zod
+  // 2. Look up the user by email
+  // 3. bcrypt.compare(plainPassword, user.hashedPassword)
+  // 4. If valid → createSession(user.id, user.email) → redirect('/')
+  // 5. Otherwise → return { error: 'Invalid email or password.' }
+}
+
+export async function register(
+  _prev: AuthState,
+  formData: FormData,
+): Promise<AuthState> {
+  // 1. Validate with stricter Zod schema (min 8 chars, 1 letter, 1 number)
+  // 2. Check email is not already taken
+  // 3. bcrypt.hash(password, 10)
+  // 4. db.user.create({ data: { email, hashedPassword } })
+  // 5. createSession(newUser.id, newUser.email) → redirect('/')
+}
+
+export async function logout(): Promise<void> {
+  // deleteSession() → redirect('/login')
+}
+```
+
+**Password validation rules (register only):**
+
+- Minimum 8 characters
+- At least one letter (`/[a-zA-Z]/`)
+- At least one number (`/[0-9]/`)
+
+### 5.3 Login page — `src/app/login/page.tsx`
+
+A **server component** that checks for an existing session before rendering:
+
+```ts
+export default async function LoginPage() {
+  const session = await getSession();
+  if (session) redirect("/"); // already logged in → bounce to home
+  return <AuthForm />;
+}
+```
+
+### 5.4 Auth form — `src/app/login/_components/AuthForm.tsx`
+
+A `'use client'` component with a tab switcher that toggles between **Sign in** and **Register** modes. Uses React 19's `useActionState` to wire up the Server Actions:
+
+```ts
+const [loginState, loginAction, isLoginPending] = useActionState<
+  AuthState,
+  FormData
+>(login, {});
+const [registerState, registerAction, isRegisterPending] = useActionState<
+  AuthState,
+  FormData
+>(register, {});
+```
+
+- Field-level error messages (from `state.errors`) appear inline beneath each input.
+- A general error banner (from `state.error`) covers cases like wrong password or duplicate email.
+- The submit button is disabled while the action is pending.
 
 ---
 
-## 5. API layer — tRPC
+## 6. API layer — tRPC
 
-### 5.1 tRPC initialisation — `src/server/trpc.ts`
+### 6.1 tRPC initialisation — `src/server/trpc.ts`
 
 ```ts
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 
-const t = initTRPC.create();
+export type Context = {
+  user: { id: number; email: string } | null;
+};
+
+const t = initTRPC.context<Context>().create();
 
 export const router = t.router;
-export const publicProcedure = t.procedure;
 export const createCallerFactory = t.createCallerFactory;
-```
 
-- `initTRPC.create()` bootstraps tRPC. You can pass a `context` type here (e.g. for authentication); this app uses an empty context for simplicity.
-- `router` is the factory for grouping procedures.
-- `publicProcedure` is the base procedure builder. Every procedure in this app inherits from it.
-- `createCallerFactory` produces a direct server-side caller used by the SSR layer to query the database without going through HTTP.
+// Anyone can call a publicProcedure
+export const publicProcedure = t.procedure;
 
-### 5.2 Product router — `src/server/routers/product.ts`
-
-```ts
-export const productRouter = router({
-  // QUERY — reads data, no side effects
-  list: publicProcedure
-    .input(z.object({ category: z.string().optional() }).optional())
-    .query(({ input }) =>
-      db.product.findMany({
-        where: input?.category ? { category: input.category } : undefined,
-        orderBy: { createdAt: "desc" },
-      }),
-    ),
-
-  categories: publicProcedure.query(async () => {
-    const rows = await db.product.findMany({
-      select: { category: true },
-      distinct: ["category"],
-    });
-    return rows.map((r) => r.category);
-  }),
-
-  getById: publicProcedure
-    .input(z.object({ id: z.number() }))
-    .query(({ input }) => db.product.findUnique({ where: { id: input.id } })),
-
-  // MUTATION — writes data, has side effects
-  create: publicProcedure
-    .input(
-      z.object({
-        name: z.string().min(1),
-        price: z.number().positive(),
-        category: z.string().min(1),
-        description: z.string().optional(),
-      }),
-    )
-    .mutation(({ input }) => db.product.create({ data: input })),
-
-  delete: publicProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(({ input }) => db.product.delete({ where: { id: input.id } })),
+// protectedProcedure rejects unauthenticated callers before the handler runs
+export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+  return next({ ctx: { user: ctx.user } });
 });
 ```
 
-| Procedure            | Type     | Input                                     | What it does                                          |
-| -------------------- | -------- | ----------------------------------------- | ----------------------------------------------------- |
-| `product.list`       | query    | `{ category? }`                           | Fetches all products, optionally filtered by category |
-| `product.categories` | query    | none                                      | Returns all distinct category strings                 |
-| `product.getById`    | query    | `{ id }`                                  | Fetches a single product by its numeric ID            |
-| `product.create`     | mutation | `{ name, price, category, description? }` | Inserts a new product row                             |
-| `product.delete`     | mutation | `{ id }`                                  | Deletes a product row                                 |
+`Context` carries the current user (or `null`). It is populated in `src/trpc/server.ts` from the session cookie and passed to every procedure call.
 
-**Queries vs Mutations:**
+`protectedProcedure` is a **middleware** — it intercepts the call before the handler runs. If `ctx.user` is `null`, it throws `UNAUTHORIZED` immediately. If the user is present, TypeScript narrows `ctx.user` to non-null for the rest of the handler.
 
-- **Query** → HTTP `GET`, safe to cache, no side effects.
-- **Mutation** → HTTP `POST`, changes data, not cached.
+### 6.2 Product router — `src/server/routers/product.ts`
 
-**Zod validation** runs on every input before the handler executes. If the input does not match the schema, tRPC returns a `400 Bad Request` with structured error details — no extra code needed.
+| Procedure            | Type     | Procedure type       | Input                                         | What it does                                       |
+| -------------------- | -------- | -------------------- | --------------------------------------------- | -------------------------------------------------- |
+| `product.list`       | query    | `publicProcedure`    | `{ category? }`                               | Fetches all products ordered by newest first       |
+| `product.categories` | query    | `publicProcedure`    | none                                          | Returns all distinct category strings              |
+| `product.getById`    | query    | `publicProcedure`    | `{ id }`                                      | Fetches a single product by numeric ID             |
+| `product.create`     | mutation | `protectedProcedure` | `{ name, price, category, description? }`     | Inserts a product, sets `authorEmail` from session |
+| `product.update`     | mutation | `protectedProcedure` | `{ id, name, price, category, description? }` | Updates a product; throws `FORBIDDEN` if not owner |
+| `product.delete`     | mutation | `protectedProcedure` | `{ id }`                                      | Deletes a product; throws `FORBIDDEN` if not owner |
 
-### 5.3 Root router — `src/server/routers/_app.ts`
+Ownership check (used by `update` and `delete`):
+
+```ts
+if (product.authorEmail && product.authorEmail !== ctx.user.email) {
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "You can only edit your own products.",
+  });
+}
+```
+
+### 6.3 Root router — `src/server/routers/_app.ts`
 
 ```ts
 export const appRouter = router({ product: productRouter });
 export type AppRouter = typeof appRouter;
 ```
 
-- Combines all sub-routers into one `appRouter`.
-- `AppRouter` is **exported as a type only** — the browser never imports the actual implementation. This is how tRPC keeps server code out of the client bundle.
+`AppRouter` is **exported as a type only** — the browser never imports the router implementation.
 
-### 5.4 HTTP handler — `src/app/api/trpc/[trpc]/route.ts`
+### 6.4 HTTP handler — `src/app/api/trpc/[trpc]/route.ts`
 
 ```ts
-import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
-import { appRouter } from "@/server/routers/_app";
-
 const handler = (req: Request) =>
   fetchRequestHandler({
     endpoint: "/api/trpc",
@@ -280,66 +405,129 @@ const handler = (req: Request) =>
 export { handler as GET, handler as POST };
 ```
 
-- The file lives at `src/app/api/trpc/[trpc]/route.ts`. The `[trpc]` dynamic segment captures the procedure path (e.g. `product.list`).
-- Next.js routes both `GET` and `POST` requests to the same handler.
-- `fetchRequestHandler` is the tRPC adapter for the Web `fetch` API (used by Next.js App Router).
-- `createContext` can return session data, database connections, etc. — here it returns an empty object.
-
----
-
-## 6. Server-side data fetching
-
-Server components fetch data directly from the database via an in-process tRPC caller and pass it as props to client components. There is no loading spinner on first render and no hydration ceremony.
-
-### 6.1 Server-side caller — `src/trpc/server.ts`
+### 6.5 Session-aware server-side caller — `src/trpc/server.ts`
 
 ```ts
 import "server-only";
 import { cache } from "react";
-import { appRouter } from "@/server/routers/_app";
-import { createCallerFactory } from "@/server/trpc";
+import { getSession } from "@/lib/session";
 
-const createCaller = createCallerFactory(appRouter);
-
-export const getCaller = cache(() => createCaller({}));
+export const getCaller = cache(async () => {
+  const session = await getSession();
+  return createCaller({
+    user: session ? { id: session.userId, email: session.email } : null,
+  });
+});
 ```
 
-- `'server-only'` — prevents this module from ever being imported in the browser bundle.
-- `createCaller({})` — a direct tRPC caller that invokes procedures **in-process** (no HTTP, no `/api/trpc` round-trip).
-- `cache()` — React's request-scoped cache ensures the same caller instance is reused across the entire server render of one request.
+The caller reads the session cookie and forwards the user into the tRPC `Context`. This means `protectedProcedure` works correctly when procedures are called server-side from Server Actions.
 
-### 6.2 How a server page uses the caller
+---
+
+## 7. Server-side data fetching and caching
+
+### 7.1 The problem — read spikes
+
+Every page load that hits the database directly adds latency and database load. On a high-traffic page (e.g. the home page showing all products), thousands of simultaneous visitors would each fire a separate `SELECT` query. The solution is to cache the query result on the server so the database is only queried once per time window, regardless of how many users arrive.
+
+### 7.2 `unstable_cache` — `src/server/queries.ts`
+
+```ts
+import "server-only";
+import { unstable_cache } from "next/cache";
+import { db } from "./db";
+
+export const getCachedProducts = unstable_cache(
+  async () => db.product.findMany({ orderBy: { createdAt: "desc" } }),
+  ["products-list"], // cache key
+  { revalidate: 60, tags: ["products"] },
+);
+```
+
+`unstable_cache` wraps any async function and stores its return value in the **Next.js Data Cache** (a server-side in-memory + disk store).
+
+| Option       | Value               | Effect                                                                                                                               |
+| ------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| cache key    | `['products-list']` | Uniquely identifies this cached entry                                                                                                |
+| `revalidate` | `60`                | Cached result is served for up to 60 s; next request after expiry triggers background re-fetch (stale-while-revalidate)              |
+| `tags`       | `['products']`      | Allows on-demand invalidation — any Server Action that mutates products calls `updateTag('products')` to bust this entry immediately |
+
+**Result:** 10,000 simultaneous visitors all get the cached result. The database is only queried once per 60-second window — or immediately after a mutation.
+
+### 7.3 Home page — `src/app/page.tsx`
 
 ```tsx
-// src/app/page.tsx — server component (no 'use client')
-import { getCaller } from "@/trpc/server";
-import ProductsClient from "./_components/ProductsClient";
+import { getCachedProducts } from "@/server/queries";
+import { getSession } from "@/lib/session";
 
 export default async function Page() {
-  const caller = getCaller();
-  const [initialProducts, initialCategories] = await Promise.all([
-    caller.product.list({}),
-    caller.product.categories(),
+  const [initialProducts, session] = await Promise.all([
+    getCachedProducts(), // ← reads from cache, not the DB directly
+    getSession(),
   ]);
 
   return (
     <ProductsClient
       initialProducts={initialProducts}
-      initialCategories={initialCategories}
+      currentUserEmail={session?.email ?? null}
     />
   );
 }
 ```
 
-1. `getCaller()` returns the cached in-process tRPC caller — queries hit the DB directly, no HTTP.
-2. `await Promise.all([...])` — both queries run in parallel and the results are ready before the component renders.
-3. Results are passed as plain props to `<ProductsClient />` — the client component starts with all data immediately, no client-side fetch on first load.
+The tRPC caller is **not used** for the initial page load. `getCachedProducts` queries Prisma directly through the cache wrapper. tRPC is reserved for client-side mutations.
+
+### 7.4 Cache invalidation after mutations — `src/app/_actions/product.ts`
+
+Every Server Action that writes to the database calls `updateTag('products')` immediately after the write succeeds:
+
+```ts
+import { revalidatePath, updateTag } from "next/cache";
+
+// After create:
+await caller.product.create(result.data);
+updateTag("products"); // bust the products list cache
+
+// After delete:
+await caller.product.delete({ id });
+updateTag("products");
+revalidatePath(`/products/${id}`);
+
+// After update:
+await caller.product.update(result.data);
+updateTag("products");
+revalidatePath(`/products/${result.data.id}`);
+```
+
+`updateTag` is the Server Action variant of `revalidateTag`. It invalidates the `'products'` Data Cache entry so the very next page request re-runs the Prisma query and stores a fresh result.
+
+### 7.5 Cache lifecycle diagram
+
+```
+GET / — first visitor
+  getCachedProducts()
+    └─ MISS → db.product.findMany() → result stored in Data Cache
+
+GET / — next 10,000 visitors (within 60 s)
+  getCachedProducts()
+    └─ HIT → result returned from cache, DB not touched
+
+POST mutation (Server Action)
+  caller.product.create/update/delete()
+    └─ updateTag('products') → cache entry invalidated
+
+GET / — first visitor after mutation
+  getCachedProducts()
+    └─ MISS → db.product.findMany() → fresh result stored
+```
+
+You can verify this in the browser: run `next build && next start`, open DevTools → Network, and inspect the `X-Next-Cache` response header on the page request (`HIT`, `MISS`, or `STALE`).
 
 ---
 
-## 7. Frontend — React / Next.js
+## 8. Frontend — React / Next.js
 
-### 7.1 Vanilla tRPC client — `src/trpc/client.ts`
+### 8.1 Vanilla tRPC client — `src/trpc/client.ts`
 
 ```ts
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
@@ -350,66 +538,81 @@ export const trpc = createTRPCClient<AppRouter>({
 });
 ```
 
-`createTRPCClient<AppRouter>()` creates a lightweight, fully-typed HTTP client. The generic type parameter `<AppRouter>` is a **type import only** — no server code enters the browser bundle. The client exposes a typed proxy: `trpc.product.create.mutate(...)`, `trpc.product.list.query(...)`, etc. These are plain async functions — no React hooks, no cache layer.
+`<AppRouter>` is a **type import only** — no server code enters the browser bundle. The client exposes a typed proxy: `trpc.product.create.mutate(...)`, etc.
 
-### 7.2 Client components
+### 8.2 Client components
 
-All interactive UI lives in `'use client'` components under `_components/`:
+- **`ProductsClient.tsx`** — catalog page UI. Receives `initialProducts` and `currentUserEmail` from the server page. Uses React 19 `useOptimistic` for instant create/delete feedback and `useActionState` to drive the Server Action form. The logged-in user's email is used to conditionally show edit/delete controls on their own products.
 
-- **`src/app/_components/ProductsClient.tsx`** — catalog page UI: product grid, category filter, add form, delete buttons. Receives `initialProducts` and `initialCategories` as props, stores them in local state, and calls `trpc.product.create.mutate` / `trpc.product.delete.mutate` for mutations. After each mutation it re-fetches the list and categories via `trpc.product.list.query` and updates state.
-- **`src/app/products/[id]/_components/ProductClient.tsx`** — product detail UI: receives the `product` as a prop from the server page, displays it, and calls `trpc.product.delete.mutate` then redirects on success.
+- **`AuthForm.tsx`** — combined sign-in / register form at `/login`. A tab switcher controls which `useActionState` pair (`login`/`register`) is active. Field errors and general errors flow back from the Server Actions.
 
-There is no cache layer or context provider. Mutations call the HTTP API, then the component re-fetches fresh data and updates local state directly.
+- **`ProductClient.tsx`** — product detail UI. Edit/delete buttons are shown only if `currentUserEmail` matches the product's `authorEmail`.
+
+- **`EditProductForm.tsx`** — pre-filled edit form wired to the `updateProduct` Server Action via `useActionState`.
+
+### 8.3 Optimistic updates
+
+`ProductsClient` uses `useOptimistic` to apply create and delete operations to the UI list **before** the Server Action resolves:
+
+```ts
+const [optimisticProducts, addOptimistic] = useOptimistic(
+  initialProducts,
+  (state, action: OptimisticAction) => {
+    if (action.type === "delete")
+      return state.filter((p) => p.id !== action.id);
+    return [action.product, ...state];
+  },
+);
+```
+
+If the Server Action fails, React automatically rolls back the optimistic state to `initialProducts`.
 
 ---
 
-## 8. End-to-end data flow
+## 9. End-to-end data flows
 
-Below is the full request lifecycle for **"user adds a product"**:
+### 9.1 Page load (read path — cached)
 
 ```
-Browser
-  │
-  │  1. User fills the form and clicks "Add Product"
-  │
-  ▼
-ProductsClient.tsx — handleSubmit()
-  │  await trpc.product.create.mutate({ name, price, category, description })
-  │
-  ▼
-@trpc/client (httpBatchLink)
-  │  Serialises the call to:
-  │  POST /api/trpc/product.create
-  │  Body: { "0": { name, price, category, description } }
-  │
-  ▼
-Next.js App Router
-  │  Matches /api/trpc/[trpc] → route.ts
-  │
-  ▼
-fetchRequestHandler (tRPC server)
-  │  1. Parses the procedure path "product.create"
-  │  2. Runs Zod validation on the input
-  │  3. Calls the handler in product.ts
-  │
-  ▼
-product.ts → publicProcedure.mutation
-  │  db.product.create({ data: input })
-  │
-  ▼
-Prisma Client
-  │  Generates SQL: INSERT INTO "Product" (name, price, ...) VALUES (...)
-  │
-  ▼
-libSQL / SQLite
-  │  Executes the SQL, returns the new row
-  │
-  ▼  (response travels back up the chain)
-  │
-ProductsClient.tsx — after await resolves
-  await trpc.product.list.query({ category })      // re-fetches the list
-  await trpc.product.categories.query()            // re-fetches categories
-  setProducts(newProducts)                         // updates local state
-  setCategories(newCategories)                     // updates local state
-  setForm({ name:'', price:'', ... })              // resets the form
+Browser → GET /
+  └─ Page server component
+       ├─ getCachedProducts()        → Data Cache HIT/MISS → Prisma → SQLite
+       └─ getSession()               → reads + verifies JWT cookie
+  └─ <ProductsClient initialProducts={...} currentUserEmail={...} />
+       └─ renders immediately with full data (no client-side fetch)
+```
+
+### 9.2 Register / Login
+
+```
+Browser → /login (GET)
+  └─ LoginPage (server component)
+       └─ getSession() → no session → renders <AuthForm />
+
+User submits the register form
+  └─ register() Server Action
+       ├─ Zod validation
+       ├─ db.user.findUnique({ where: { email } })   → check for duplicate
+       ├─ bcrypt.hash(password, 10)
+       ├─ db.user.create({ data: { email, hashedPassword } })
+       ├─ createSession(userId, email)               → signs JWT, sets httpOnly cookie
+       └─ redirect('/')
+```
+
+### 9.3 Create product (write path — cache bust)
+
+```
+User fills the form and clicks "Add Product"
+  └─ createProduct() Server Action
+       ├─ Zod validation
+       ├─ getCaller()                    → tRPC caller with session context
+       ├─ caller.product.create(data)
+       │    └─ protectedProcedure        → ctx.user verified
+       │    └─ db.product.create(...)    → INSERT INTO Product
+       ├─ updateTag('products')          → busts Data Cache entry
+       └─ (Next.js re-renders / revalidates the home page on next GET)
+
+Client side (useOptimistic)
+  └─ addOptimistic({ type: 'create', product: optimisticProduct })
+       └─ list updates instantly, before the server round-trip completes
 ```
